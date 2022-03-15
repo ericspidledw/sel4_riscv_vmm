@@ -609,7 +609,7 @@ struct fault {
     enum fault_width width;
     int content;
     uint32_t riscv_inst;
-    riscv_inst_t decoded_inst; 
+    riscv_inst_t decoded_inst;
 };
 
 typedef struct fault fault_t;
@@ -682,7 +682,7 @@ struct vm {
     void                    *entry_point;
     int                     ndevices;
     struct device           devices[MAX_DEVICES_PER_VM];
-}; 
+};
 
 /* allocator static pool */
 #define ALLOCATOR_STATIC_POOL_SIZE ((1 << seL4_PageBits) * 4000)
@@ -1083,7 +1083,6 @@ static void vmm_handler_thread(vm_t *vm, seL4_Word vcpu_index)
         seL4_MessageInfo_t tag;
         seL4_Word sender_badge;
         tag= seL4_Recv(ep, &sender_badge);
-        //printf("label %lx badge %lx\n", seL4_MessageInfo_get_label(tag), sender_badge);
         seL4_CPtr vcpu = vm_get_vcpu(vm,  vcpu_index);
         if (sender_badge == 0) {
             seL4_Word label;
@@ -1669,6 +1668,7 @@ static void *map_emulated_device_pages(vm_t *vm, struct device *d)
     DMAP("Mapping emulated device ipa0x%p size 0x%lx\n", vm_addr, size);
     for (; remain_size > 0; remain_size -= 0x1000) {
         /* Create a frame (and a copy for the VMM) */
+       // DMAP("vm_addr is %p\n", vm_addr);
         err = vka_alloc_frame(vka, 12, &frame);
         assert(!err);
         if (err) {
@@ -1690,18 +1690,18 @@ static void *map_emulated_device_pages(vm_t *vm, struct device *d)
         }
 
         /* Map the frame to the VM */
-
-        err = vspace_map_pages_at_vaddr(vm_vspace, &vm_frame.capPtr, NULL, vm_addr,
-                                        1, 12, vm_res);
-        //vspace_free_reservation(vm_vspace, vm_res);
-        assert(!err);
-        if (err) {
-            printf("Failed to provide memory\n");
-            vka_cspace_free(vka, vm_frame.capPtr);
-            vka_cspace_free(vka, vmm_frame.capPtr);
-            vka_free_object(vka, &frame);
-            return NULL;
-        }
+        // DMAP("Second vm_addr print is %p\n", vm_addr);
+        // err = vspace_map_pages_at_vaddr(vm_vspace, &vm_frame.capPtr, NULL, vm_addr,
+        //                                 1, 12, vm_res);
+        // //vspace_free_reservation(vm_vspace, vm_res);
+        // assert(!err);
+        // if (err) {
+        //
+        //     vka_cspace_free(vka, vm_frame.capPtr);
+        //     vka_cspace_free(vka, vmm_frame.capPtr);
+        //     vka_free_object(vka, &frame);
+        //     return NULL;
+        // }
         err = vspace_map_pages_at_vaddr(vmm_vspace, &vmm_frame.capPtr, NULL, vmm_addr,
                                     1, 12, vmm_res);
         assert(!err);
@@ -1973,7 +1973,7 @@ static int handle_plic_fault(struct device *d, vm_t *vm, fault_t *fault)
     assert(vcpu_info);
     void *vmm_va = (void *)d->priv;
     decode_inst(fault);
-    seL4_UserContext *regs = fault_get_ctx(fault); 
+    seL4_UserContext *regs = fault_get_ctx(fault);
     riscv_inst_t *ri = &fault->decoded_inst;
     switch (ri->opcode) {
         case ST_OP: {
@@ -2057,7 +2057,7 @@ static int vm_install_plic(vm_t *vm)
 
     plic_dev.priv = vaddr;
     bzero(vaddr, PLIC_SIZE);
-    return vm_add_device(vm, &plic_dev); 
+    return vm_add_device(vm, &plic_dev);
 }
 
 static int linux_irq[] = {
@@ -2250,8 +2250,8 @@ static int install_linux_devices(vm_t *vm)
 
 
 
-//#define DEBUG_COPYOUT
-//#define DEBUG_COPYIN
+// #define DEBUG_COPYOUT 1
+// #define DEBUG_COPYIN  1
 
 #ifdef DEBUG_COPYOUT
 #define DCOPYOUT(...) printf("copyout: " __VA_ARGS__)
@@ -2464,6 +2464,8 @@ static int vm_copyin(vm_t *vm, void *data, uintptr_t address, size_t size)
 }
 
 #define DTB_ADDR    0x84000000
+//#define DTB_ADDR    0x44000000
+
 
 static void *load_linux(vm_t *vm, const char *kernel_name, const char *dtb_name)
 {
@@ -2660,6 +2662,7 @@ void decode_inst(fault_t *f)
 static int handle_page_fault(vm_t *vm, fault_t *fault)
 {
     uintptr_t  addr = fault->addr;
+    dump_guest(vm, addr);
     int err = 0;
     for (int i = 0; i < vm->ndevices; i++) {
         struct device *d = &vm->devices[i];
@@ -2725,6 +2728,7 @@ static int vm_event(vm_t* vm, seL4_MessageInfo_t tag, seL4_Word badge)
     seL4_CPtr tcb = fault->vcpu->tcb.cptr;
     seL4_CPtr vcpu = fault->vcpu->vcpu.cptr;
 
+
 #if CONFIG_MAX_NUM_NODES > 1
 #ifndef CONFIG_PER_VCPU_VMM
     seL4_TCB_SetAffinity(seL4_CapInitThreadTCB, fault->vcpu->affinity);
@@ -2769,7 +2773,7 @@ static int vm_event(vm_t* vm, seL4_MessageInfo_t tag, seL4_Word badge)
         return 0;
     }
 
-    break;
+   //break;
 
     case seL4_Fault_VCPUFault: {
         seL4_MessageInfo_t reply;
@@ -2817,7 +2821,7 @@ static int vm_event(vm_t* vm, seL4_MessageInfo_t tag, seL4_Word badge)
                         vm_inject_timer_interrupt(vm, fault);
                         regs->a0 = 0;
                         break;
-                    } 
+                    }
 
                     err = seL4_RISCV_VCPU_WriteRegs(vcpu, seL4_VCPUReg_TIMER, regs->a0);
                     assert(!err);
@@ -2963,7 +2967,7 @@ int main(void)
         return -1;
     }
 
-    /* Loop forever, handling events */
+       /* Loop forever, handling events */
     while (1) {
         seL4_MessageInfo_t tag;
         seL4_Word sender_badge;
@@ -3007,6 +3011,6 @@ int main(void)
             }
         }
     }
-
     return 0;
 }
+//}

@@ -1,3 +1,4 @@
+
 /dts-v1/;
 
 / {
@@ -6,18 +7,31 @@
 	compatible = "riscv-virtio";
 	model = "riscv-virtio,qemu";
 
-	chosen {
-		bootargs = "console=ttyS0";
-		stdout-path = "/uart@10000000";
-	};
 
-	uart@10000000 {
-		interrupts = <0xa>;
-		interrupt-parent = <0x2>;
-		clock-frequency = <0x384000>;
-		reg = <0x0 0x10000000 0x0 0x100>;
-		compatible = "ns16550a";
-	};
+
+	uartclk: uartclk {
+        compatible = "fixed-clock";
+        #clock-cells = <0>;
+        clock-frequency = <100000000>;
+    };
+
+	serial@ff010000 {
+        compatible = "cdns,uart-r1p12";
+        status = "okay";
+        interrupts = <2>;
+        interrupt-parent = <&plic>;
+        reg = <0x0 0xff010000 0x0 0x1000>;
+        clock-names = "uart_clk", "pclk";
+        clocks = <&uartclk>, <&uartclk>;
+    };
+
+	aliases {
+        serial0 = "/serial@ff010000";
+    };
+
+	chosen {
+        stdout-path = "/serial@ff010000";
+    };
 
 	cpus {
 		#address-cells = <0x1>;
@@ -46,6 +60,7 @@
 	memory@80000000 {
 		device_type = "memory";
 		reg = <0x0 0x80000000 0x0 0x8000000>;
+
 	};
 
 	soc {
@@ -54,7 +69,7 @@
 		compatible = "simple-bus";
 		ranges;
 
-		interrupt-controller@c000000 {
+		plic: interrupt-controller@c000000 {
 			linux,phandle = <0x2>;
 			phandle = <0x2>;
 			riscv,ndev = <0x35>;
