@@ -685,7 +685,7 @@ struct vm {
 };
 
 /* allocator static pool */
-#define ALLOCATOR_STATIC_POOL_SIZE ((1 << seL4_PageBits) * 4000)
+#define ALLOCATOR_STATIC_POOL_SIZE ((1 << seL4_PageBits) * 8000)
 static char allocator_mem_pool[ALLOCATOR_STATIC_POOL_SIZE];
 
 vka_t _vka;
@@ -997,7 +997,7 @@ static int vmm_get_guest_vspace(vspace_t *loader, vspace_t *new_vspace, vka_t *v
 }
 
 
-#define IRQ_UART    10
+#define IRQ_UART    2
 
 #if CONFIG_MAX_NUM_NODES > 1
 #define IRQ_VCPU0_VTIMER    132
@@ -1736,6 +1736,9 @@ struct device ram_dev = {
 #define PLIC_BASE  0xc000000
 #define PLIC_SIZE  0x4000000
 
+#define UART_BASE 0xff010000
+#define UART_SIZE 0x1000
+
 #define PLIC_INT_SOURCE_START   1
 #define PLIC_INT_SOURCE_END     136
 
@@ -2035,6 +2038,14 @@ struct device plic_dev = {
     .priv               = NULL,
 };
 
+struct device uart_dev = {
+    .devid              = DEV_UART0,
+    .name               = "uart",
+    .pstart             = 0xff010000,
+    .size               = 0x1000,
+    .handle_page_fault  = NULL,
+    .priv               = NULL,
+};
 
 static int plic_set_pending(int irq, void *token)
 {
@@ -2048,6 +2059,13 @@ static int plic_set_pending(int irq, void *token)
     pending += offset;
     *pending |= BIT(bit);
     return 0;
+}
+
+static int vm_install_uart(vm_t *vm)
+{
+    void *vaddr = map_vm_device(vm, uart_dev.pstart, uart_dev.pstart, seL4_AllRights);
+
+    return vm_add_device(vm, &uart_dev);
 }
 
 static int vm_install_plic(vm_t *vm)
@@ -2216,6 +2234,8 @@ static int install_linux_devices(vm_t *vm)
     err = vm_install_ram_only_device(vm, &ram_dev);
     assert(!err);
     err = vm_install_plic(vm);
+    assert(!err);
+    err = vm_install_uart(vm);
     assert(!err);
 
 
