@@ -36,6 +36,8 @@
 #include <cpio/cpio.h>
 
 
+bool isInstruction16Bit(uint32_t instruction);
+
 static int vm_copyin_lock = 0;
 static int vm_map_device_lock = 0;
 
@@ -65,7 +67,7 @@ static inline void unlock(int *lock)
 
 /* RISCV instruction decoding */
 
-/* format for store instructions  
+/* format for store instructions 
  * 31 -------------------------- 0
  * immi[15:5] | rs2 (5) | rs1 (5) | func3 (3) | immi[4:0] | opcode (7)
  * rs1 is for memory address.
@@ -73,42 +75,86 @@ static inline void unlock(int *lock)
  */
 
 
-#define FUNC3_MASK  0x7
-#define FUNC3_SHIFT 12 
-#define FUNC3(x)    ((x >> FUNC3_SHIFT) & FUNC3_MASK)
+#define FUNC3_MASK  0x7 // (func 3 is 3 bits wide so 111 == 7)
+#define FUNC3_SHIFT 12 // (func 3 starts at the 12th bit so we shift 12)
+#define FUNC3(x)    ((x >> FUNC3_SHIFT) & FUNC3_MASK) // shift our value by 12 then and with mask to get func3
 
-#define OP_MASK     0x7f
-#define OPCODE(x)   (x & OP_MASK)
+#define OP_MASK_16  0x3 // (0b1110_0000_000_0011) opcode is spread out between bits 0-1 and 13-15
+#define OPCODE_16(x)   (x & OP_MASK_16)
 
-#define RMASK       0x1f
+#define OP_MASK     0x7f // (opcode is 7 bits and the first 7 bits so no shift 111_1111 == 0x7f)
+#define OPCODE(x)   (x & OP_MASK) // and with mask to get opcode
 
-#define LD_OP       0b0000011
-#define LD_RD(x)    ((x >> 7) & RMASK)
-#define LD_RS1(x)   ((x >> 15) & RMASK);
-#define LD_IMMI(x)  ((x >> 20) & (BIT(13) - 1))
+#define RMASK       0x1f //each R portion (rd, r1, r2) is 5 bits so 1_1111 is 0x1f
+#define RDSHIFT     7 //RD begins at the 7th bit of the 32 bit value
+#define RS1_SHIFT   15 // RS1 begins at the 15th bit of the 32 bit value
+#define IMMI_SHIFT  20 // immi begins at 20 and extends the rest of the way(31)
 
 
-#define ST_OP       0b0100011
+/* 16 bit instruction shifts and masks (C extension) */
+
+#define RMASK_16   0x07 // each bit R is 3 bits long so we mask with 0b111
+#define RDSHIFT_16      2
+#define RS1_SHIFT_16    7
+#define RS2_SHIFT_16    2
+#define FUNC3_SHIFT_16  13
+
+#define INSTRUCTION_SIZE_MASK   0x3 // check the least 2 significant bits to determine instruction size
+#define IS_32_BIT   0x3
+
+
+/* 16 bit opcodes and fxns */
+#define BASE_OP_16   0x0
+
+
+#define ST_OR_LD_MASK_16    0x4
+#define INST_WDTH_MASK_16   0x3
+
+#define DW_16   3
+#define W_16    2
+
+#define LD_OP_16     0X0 // these correspond to a value of 00 in bits 1 and 0 and then the last three bits or func3
+#define ST_OP_16     0x4
+
+#define FUNC3_16(x)     ((x >> FUNC3_SHIFT_16) & FUNC3_MASK)
+
+#define ST_RS1_16(x)     ((x >> RS1_SHIFT_16) & RMASK_16)
+#define ST_RS2_16(x)     ((x >> RS2_SHIFT_16) & RMASK_16)
+
+#define LD_RD_16(x)      ((x >> RDSHIFT_16) & RMASK_16)
+#define LD_RS1_16(x)     ((x >> RS1_SHIFT_16) & RMASK_16)
+#define LD_IMMI_16(x)               // immi is bits 5-6 and 10-12 bit 2 is at 6, bit6 is at 7, bit3 is at 10, bit4 is at 11, bit5 is at 12
+
+
+/******/
+
+#define LD_OP       0b0000011 // opcode for the load operation (0x03)
+#define LD_RD(x)    ((x >> RDSHIFT) & RMASK) // shift by our RDSHIFT and then mask with RMASK
+#define LD_RS1(x)   ((x >> RS1_SHIFT) & RMASK) // shift by 15 (15th bit) and mask with 5 bit mask for RS1 value
+#define LD_IMMI(x)  ((x >> IMMI_SHIFT) & (BIT(13) - 1)) // last 12 bits (20 - 31) & (1 << 13 - 1) or 0x1FFF
+
+
+#define ST_OP       0b0100011 //opcode for the store operation (35 or 0x23) SB
 #define RS2_SHIFT   20
-#define RS1_SHIFT   15
-#define ST_RS2(x)   ((x >> RS2_SHIFT) & RMASK)
-#define ST_RS1(x)   ((x >> RS1_SHIFT) & RMASK)
+#define ST_RS2(x)   ((x >> RS2_SHIFT) & RMASK) // shift 20 for RS2 and then mask with 1_1111
+#define ST_RS1(x)   ((x >> RS1_SHIFT) & RMASK) // shift 15 for RS1 and then mask with 1_1111
 
-#define LD_ST_B        0
+#define LD_ST_B        0  //map these macros the enumeration for fault width (byte, halfword, word, double word)
 #define LD_ST_H        1
 #define LD_ST_W        2
 #define LD_ST_D        3
 
 typedef struct riscv_inst {
-    int opcode;
-    int rd;
-    int rs1;
-    int rs2;
-    int immi;
-    int func3;
-    int func5;
-    uint32_t inst;
-} riscv_inst_t;
+    int opcode; // operation code to perform operation
+    int rd; // result registers
+    int rs1; // register argument 1
+    int rs2; // register argument 2 ?
+    int immi; // immediate or constant value
+    int func3; // select the type of operation
+    int func5; // should be func7 I think
+    uint32_t inst; // the entire instruction put back together
+    bool is16Bit;
+} riscv_inst_t; // struct for riscv instruction
 
 /* interrupt server stuff */
 typedef int irq_t;
@@ -592,24 +638,24 @@ enum fault_width {
 };
 
 struct fault {
-    vm_t *vm;
-    struct vcpu_info *vcpu;
-    int    vcpu_id;
+    vm_t *vm; //vm that the fault occurs on
+    struct vcpu_info *vcpu; // virtual cpu for the fault
+    int    vcpu_id; // id of the virtual cpu
     /// Reply capability to the faulting TCB
-    cspacepath_t reply_cap;
-    seL4_UserContext regs;
-    seL4_Word base_addr;
-    seL4_Word addr;
+    cspacepath_t reply_cap; // cap we use to reply
+    seL4_UserContext regs; // data regs
+    seL4_Word base_addr; // base address of the fault?
+    seL4_Word addr; // actual spot where the fault occurred
     seL4_Word ip;
     seL4_Word data;
     seL4_Word fsr;
-    bool is_prefetch;
-    bool is_wfi;
+    bool is_prefetch; // is it prefetch
+    bool is_wfi; // are we waiting for an interrupt
     int stage;
-    enum fault_width width;
+    enum fault_width width; // the width of the fault
     int content;
-    uint32_t riscv_inst;
-    riscv_inst_t decoded_inst;
+    uint32_t riscv_inst; // the instruction we are executing
+    riscv_inst_t decoded_inst; // the decoded instruction
 };
 
 typedef struct fault fault_t;
@@ -809,15 +855,15 @@ static seL4_UserContext* fault_get_ctx(fault_t *f)
 {
     if ((f->content & CONTENT_REGS) == 0) {
         int err;
-        vcpu_info_t *vcpu = f->vcpu;
+        vcpu_info_t *vcpu = f->vcpu; // grab the fault vcpu
 
         err = seL4_TCB_ReadRegisters(vcpu->tcb.cptr, false, 0,
                                      sizeof(f->regs) / sizeof(f->regs.pc),
-                                     &f->regs);
-        assert(!err);
-        f->content |= CONTENT_REGS;
+                                     &f->regs); //read the vcpu's thread control buffer register's and put it into the fault's regs var
+        assert(!err); // assert our read worked
+        f->content |= CONTENT_REGS; // set the content = equal to CONTENT_REGS
     }
-    return &f->regs;
+    return &f->regs; // return the address of our fault's reg variable
 }
 
 static int new_user_fault(fault_t *fault)
@@ -1696,7 +1742,6 @@ static void *map_emulated_device_pages(vm_t *vm, struct device *d)
         // //vspace_free_reservation(vm_vspace, vm_res);
         // assert(!err);
         // if (err) {
-        //
         //     vka_cspace_free(vka, vm_frame.capPtr);
         //     vka_cspace_free(vka, vmm_frame.capPtr);
         //     vka_free_object(vka, &frame);
@@ -1718,6 +1763,13 @@ static void *map_emulated_device_pages(vm_t *vm, struct device *d)
 static int handle_ram_fault(struct device *d, vm_t *vm, fault_t *fault)
 {
     /* TODO */
+    printf("we are in a ram fault\n");
+    return 0;
+}
+
+static int handle_uart_fault(struct device *d, vm_t *vm, fault_t *fault)
+{
+    printf("we are in the uart fault\n");
     return 0;
 }
 
@@ -1969,15 +2021,66 @@ void do_irq_server_ack(void *token);
 
 static int handle_plic_fault(struct device *d, vm_t *vm, fault_t *fault)
 {
-    uintptr_t addr = fault->addr;
-    uintptr_t offset = addr - PLIC_BASE;
-    int write = fault_is_write(fault);
-    vcpu_info_t *vcpu_info = fault->vcpu;
-    assert(vcpu_info);
-    void *vmm_va = (void *)d->priv;
-    decode_inst(fault);
-    seL4_UserContext *regs = fault_get_ctx(fault);
-    riscv_inst_t *ri = &fault->decoded_inst;
+    uintptr_t addr = fault->addr; // get the address we fault at.....
+    uintptr_t offset = addr - PLIC_BASE; // get our offset i.e. how far we are from PLIC BASE
+    int write = fault_is_write(fault); // check if our fault is casued by a write
+    vcpu_info_t *vcpu_info = fault->vcpu; // get the vcpu from the fault
+    assert(vcpu_info); // assert that we have a vcpu to begin with
+    void *vmm_va = (void *)d->priv; // get the device priv? not sure what this is
+    decode_inst(fault); // pass our fault to the decode instruction function
+    seL4_UserContext *regs = fault_get_ctx(fault); //
+    riscv_inst_t *ri = &fault->decoded_inst; // use our decoded instruction from the decode_inst fxn
+   if(ri->is16Bit)
+    {
+        switch(ri->func3 & ST_OR_LD_MASK_16)
+        {
+            case ST_OP_16:{
+                assert(fault->width == WIDTH_WORD);
+                uint32_t data = (uint32_t)get_reg(regs, ri->rs2);
+                uint32_t *addr = (uint32_t *)(vmm_va + offset);
+                *addr = data;
+                // printf("pc %lx store data %x to %p %lx\n", regs->pc, data, addr, offset);
+                if ((offset >= PLIC_H0_CC_START && offset < PLIC_H0_CC_END) ||
+                    (offset >= PLIC_H1_CC_START && offset < PLIC_H1_CC_END) ||
+                    (offset >= PLIC_H2_CC_START && offset < PLIC_H2_CC_END)) {
+                    //printf("cc %d %d\n", vcpu_info->hart_id, vcpu_info->affinity);
+                    plic_pending_irq = 0;
+                    do_irq_server_ack(plic_pending_irq_token);
+                }
+                ignore_fault(fault);
+                return 0;
+            }
+            case LD_OP_16: {
+                assert(fault->width == WIDTH_WORD);
+                uint32_t data = 0;
+                if ((offset >= PLIC_H0_CC_START && offset < PLIC_H0_CC_END) ||
+                    (offset >= PLIC_H1_CC_START && offset < PLIC_H1_CC_END) ||
+                    (offset >= PLIC_H2_CC_START && offset < PLIC_H2_CC_END)) {
+                    data = plic_pending_irq;
+                    //printf("c %d %d %d\n", data, vcpu_info->hart_id, vcpu_info->affinity);
+                    plic_pending_irq = 0;
+                    // clear the pending external interrupt bit when reading the claim
+                    seL4_RISCV_VCPU_ReadRegs_t sip = seL4_RISCV_VCPU_ReadRegs(vcpu_info->vcpu.cptr, seL4_VCPUReg_SIP);
+                    assert(!sip.error);
+                    sip.value &= ~SIP_EXTERNAL;
+                    int err = seL4_RISCV_VCPU_WriteRegs(vcpu_info->vcpu.cptr, seL4_VCPUReg_SIP, sip.value);
+                    assert(!err);
+                }
+                else {
+                    data = *(uint32_t *)(vmm_va + offset);
+                }
+                seL4_Word reg = get_reg(regs, ri->rd);
+                reg &= 0xffffffff00000000;
+                reg |= data;
+                set_reg(regs, ri->rd, reg);
+                ignore_fault(fault);
+                return 0;
+            }
+            default:
+                printf("Can't handle op code %d", ri->func3 & 0x04);
+        }
+    }
+    else{
     switch (ri->opcode) {
         case ST_OP: {
             // 32bit!!!
@@ -2026,6 +2129,7 @@ static int handle_plic_fault(struct device *d, vm_t *vm, fault_t *fault)
             printf("Unhandled %d\n", ri->opcode);
             break;
     }
+    }
     return 0;
 }
 
@@ -2043,7 +2147,7 @@ struct device uart_dev = {
     .name               = "uart",
     .pstart             = 0xff010000,
     .size               = 0x1000,
-    .handle_page_fault  = NULL,
+    .handle_page_fault  = handle_uart_fault,
     .priv               = NULL,
 };
 
@@ -2393,7 +2497,7 @@ static int vm_copyout(vm_t *vm, void *data, uintptr_t address, size_t size)
     return copy_out(vm_get_vspace(vm), vm->vmm_vspace, vm->vka, data, address, size);
 }
 
-static int copy_in_page(vspace_t *vmm_vspace, vspace_t *vm_vspace, vka_t *vka, void *dest, void *src, size_t size)
+static int copy_in_page(vspace_t *vmm_vspace, vspace_t *vm_vspace, vka_t *vka, void *dest, void *src, size_t size) // dest = i, source = gpa, size is 4 at first
 {
     seL4_CPtr cap, vmm_cap;
     cspacepath_t cap_path, vmm_cap_path;
@@ -2404,26 +2508,26 @@ static int copy_in_page(vspace_t *vmm_vspace, vspace_t *vm_vspace, vka_t *vka, v
     int err;
 
     /* Find the VM frame */
-    cap = vspace_get_cap(vm_vspace, src);
-    if (cap == seL4_CapNull) {
+    cap = vspace_get_cap(vm_vspace, src); // using our vm's vspace and our src (guest's physical address) grab the capability there
+    if (cap == seL4_CapNull) { // if we get null error out
         printf("null cap %p\n", src);
         return -1;
     }
-    bits = vspace_get_cookie(vm_vspace, src);
+    bits = vspace_get_cookie(vm_vspace, src); // get cookies no idea what this means
     if (bits == 0) {
         //bits = 12;
         bits = MAP_PAGE_BITS;
     }
-    vka_cspace_make_path(vka, cap, &cap_path);
+    vka_cspace_make_path(vka, cap, &cap_path); // okay make a capability space path using our allocator (vm's vka), the cap we just grabbed, and put it in our cap_path var
 
     /* Copy the cap so that we can map it into the VMM */
-    err = vka_cspace_alloc_path(vka, &vmm_cap_path);
-    vmm_cap = vmm_cap_path.capPtr;
+    err = vka_cspace_alloc_path(vka, &vmm_cap_path); // allocate the memory for our vmm cap path
+    vmm_cap = vmm_cap_path.capPtr; // set our vmm cap to the vmm_cap_path cap pointer
     if (err) {
         printf("Failed to allocate slot for copyin\n");
         return -1;
     }
-    err = vka_cnode_copy(&vmm_cap_path, &cap_path, seL4_AllRights);
+    err = vka_cnode_copy(&vmm_cap_path, &cap_path, seL4_AllRights); //copy the cnode from our cap path to our vmm_cap_path (vmm_cap should point to same cap as the vm now)
     if (err) {
         vka_cspace_free(vka, vmm_cap);
         printf("Failed to copy frame cap for copyin\n");
@@ -2446,10 +2550,10 @@ static int copy_in_page(vspace_t *vmm_vspace, vspace_t *vm_vspace, vka_t *vka, v
     if (copy_size > size) {
         copy_size = size;
     }
-    memcpy(dest, tmp_src + offset, copy_size);
+    memcpy(dest, tmp_src + offset, copy_size); // copy copy_size bytes of whatever is in temp_src + offset to the destination
 
     /* Clean up */
-    vspace_unmap_pages(vmm_vspace, tmp_src, 1, bits, VSPACE_PRESERVE);
+    vspace_unmap_pages(vmm_vspace, tmp_src, 1, bits, VSPACE_PRESERVE); // unmap, delelte our vmm_cap_path and free our vmm_capability
     vka_cnode_delete(&vmm_cap_path);
     vka_cspace_free(vka, vmm_cap);
 
@@ -2458,19 +2562,19 @@ static int copy_in_page(vspace_t *vmm_vspace, vspace_t *vm_vspace, vka_t *vka, v
     return copy_size;
 }
 
-static int copy_in(vspace_t *dst_vspace, vspace_t *src_vspace, vka_t *vka, void *dest, uintptr_t src, size_t size)
+static int copy_in(vspace_t *dst_vspace, vspace_t *src_vspace, vka_t *vka, void *dest, uintptr_t src, size_t size) // destspace = vmm_vspace, srcspace = vm_vspace, vka=vm's allocator, dest=i, source=gpa, size=4
 {
     DCOPYIN("copy in 0x%x->0x%x (0x%x bytes)\n", (uint32_t)src, (uint32_t)dest, size);
     while (size) {
         int seg_size;
-        seg_size = copy_in_page(dst_vspace, src_vspace, vka, dest, (void*)src, size);
+        seg_size = copy_in_page(dst_vspace, src_vspace, vka, dest, (void*)src, size); // dest_vspace=vmm's vspace, src_vspace=vm_vspace, vka=vm's allocator, dest=i, source=gpa, size=4
         assert(seg_size > 0);
         if (seg_size <= 0) {
             return -1;
         }
-        dest += seg_size;
-        src += seg_size;
-        size -= seg_size;
+        dest += seg_size; //add our segment size to destination (i's address)   0000_0011 == 0x03
+        src += seg_size; // add our segment size to the source (gpa's address)
+        size -= seg_size; // decrement our segment size from total size
     }
     return 0;
 }
@@ -2478,7 +2582,7 @@ static int copy_in(vspace_t *dst_vspace, vspace_t *src_vspace, vka_t *vka, void 
 static int vm_copyin(vm_t *vm, void *data, uintptr_t address, size_t size)
 {
     lock(&vm_copyin_lock);
-    int ret = copy_in(vm->vmm_vspace, vm_get_vspace(vm), vm->vka, data, address, size);
+    int ret = copy_in(vm->vmm_vspace, vm_get_vspace(vm), vm->vka, data, address, size); // call with vmm_vspace, vm_vspcace, our vm's allocator, our data(i), address (gpa), and our size (4)
     unlock(&vm_copyin_lock);
     return ret;
 }
@@ -2518,9 +2622,11 @@ static void *load_linux(vm_t *vm, const char *kernel_name, const char *dtb_name)
 #define COPY_SIZE  64
 static void dump_guest(vm_t *vm, seL4_Word addr)
 {
+    int err;
     char buf[COPY_SIZE];
     bzero(buf, COPY_SIZE);
-    vm_copyin(vm, &buf, addr, COPY_SIZE);
+    err = vm_copyin(vm, &buf, addr, COPY_SIZE);
+    assert(err > -1);
     int *ptr = (int *)&buf[0];
     for (int i = 0; i < COPY_SIZE / 4; i++) {
         printf("addr %x val %x\n", addr + i * 4, *ptr);
@@ -2544,7 +2650,6 @@ static void dump_guest(vm_t *vm, seL4_Word addr)
 
 
 //#define DEBUG_PW
-
 #ifdef DEBUG_PW
 #define DPW(...)  printf(__VA_ARGS__)
 #else
@@ -2554,10 +2659,10 @@ static void dump_guest(vm_t *vm, seL4_Word addr)
 static uint64_t pt[CONFIG_MAX_NUM_NODES][512];
 
 /* translate guest va to guest pa Sv39 */
-static seL4_Word gva_to_gpa(vm_t *vm, seL4_Word va, int vcpu_id)
+static seL4_Word gva_to_gpa(vm_t *vm, seL4_Word va, int vcpu_id) // the vm, the virtual address, and the vcpu_id
 {
     int level = 2;
-    assert(vcpu_id >=0 && vcpu_id < CONFIG_MAX_NUM_NODES);
+    assert(vcpu_id >=0 && vcpu_id < CONFIG_MAX_NUM_NODES); // check value of our vcpu id to ensure it is in range
     uint64_t *ppt = &pt[vcpu_id][0];
     bzero(ppt, 4096);
     seL4_Word satp = 0;
@@ -2570,6 +2675,7 @@ static seL4_Word gva_to_gpa(vm_t *vm, seL4_Word va, int vcpu_id)
     seL4_Word ppn = GET_PPN(satp);
     seL4_Word gpa = ppn << PPN_SHIFT;
     uint64_t pte = 0;
+    int err;
 
     // read in the page table 
     while (level > 0) {
@@ -2577,8 +2683,10 @@ static seL4_Word gva_to_gpa(vm_t *vm, seL4_Word va, int vcpu_id)
         if (gpa == 0) {
             while (1);
         }
-        vm_copyin(vm, ppt, gpa, sizeof(uint64_t) * 512);
-        for (int i = 0; i < 512; i++) {
+        err = vm_copyin(vm, ppt, gpa, sizeof(uint64_t) * 512);
+        assert(err > -1);
+        int i = 0;
+        for (i = 0; i < 512; i++) {
             if (ppt[i] != 0) {
                 DPW("pte %d %lx\n", i, ppt[i]);
             }
@@ -2616,58 +2724,112 @@ static seL4_Word gva_to_gpa(vm_t *vm, seL4_Word va, int vcpu_id)
     return 0;
 }
 
-void decode_inst(fault_t *f)
+void decode_inst(fault_t *f) // function used to decode a riscv instruction that comes with a fault
 {
-    uint32_t *i = &(f->decoded_inst.inst);
-    riscv_inst_t *ri = &(f->decoded_inst);
-    *i = 0;
+    int err; // varaible used for error checking
+    uint32_t *i = &(f->decoded_inst.inst); // grab the full instruction from our riscv instruction
+    riscv_inst_t *ri = &(f->decoded_inst); // pointer to the entire riscv_instruction struct not just the  32 bit instruction to modify it
+    *i = 0; // zero out our instruction from before
 
-    seL4_Word ip_gpa = gva_to_gpa(f->vm, f->ip, f->vcpu_id);
-    vm_copyin(f->vm, i, ip_gpa, 4);
+    seL4_Word ip_gpa = gva_to_gpa(f->vm, f->ip, f->vcpu_id); // call guest virtual address to guest physical address
+    err = vm_copyin(f->vm, i, ip_gpa, 4); // copy in our instruction from the guest to our VMM using the i variable and our physical address from above (our vm, our data, our address and our size)
+    //printf("Dereferenced i is %u\n,", *i);
+    assert(err > -1); // make sure there is no error when we return from vm copyin
 
     /* with a bit improvement from the kernel, now we do
      * not need to do the nested page table walking to
      * get the faulting instruction for decoding
      */
-    f->riscv_inst = *i;
-    ri->opcode = OPCODE(*i);
-    switch (ri->opcode) {
-        case ST_OP:
-            ri->rs2 = ST_RS2(*i);
-            ri->rs1 = ST_RS1(*i);
-            ri->func3 = FUNC3(*i);
-            ri->inst = *i;
-            break;
-        case LD_OP:
-            ri->rs1 = LD_RS1(*i);
-            ri->rd = LD_RD(*i);
-            ri->immi = LD_IMMI(*i);
-            ri->func3 = FUNC3(*i);
-            break;
-        default:
-            printf("Invalid op %x\n", ri->opcode);
-            break;
+    f->riscv_inst = *i; // set our fault's instruction to be the value at address i we got from the copy in function
+    ri->is16Bit = isInstruction16Bit(*i);
+    if(ri->is16Bit) // if we have 16 bit instruction (func3 determines the operation, )
+    {
+        ri->opcode = OPCODE_16(*i);
+        if(ri->opcode == BASE_OP_16)
+        {
+            ri->func3 = FUNC3_16(*i);
+            int storeOrLoad = ri->func3 & ST_OR_LD_MASK_16;
+            int getInstWidth = ri-> func3 & INST_WDTH_MASK_16;
+            switch(storeOrLoad) // check if func3 last bit is 1 or 0 (0b111 and 0b000)
+            {
+                    case ST_OP_16: // store case
+                        ri->rs1 = ST_RS1_16(*i);
+                        ri->rs2 = ST_RS2_16(*i);
+                        ri->inst = *i;
+                        break;
+                    case LD_OP_16: // load case
+                        ri->rd = LD_RD_16(*i);
+                        ri->rs1 = LD_RS1_16(*i);
+                        ri->inst = *i;
+                        // parse immmi // 0x0000_0110_0011_1000   0x06B1 do we need to do this?
+                        break;
+                    default:
+                        printf("How did we even get here....\n");
+                        break;
+            }
+            switch(getInstWidth)
+            {
+                case DW_16: // 3
+                    f->width = WIDTH_DOUBLEWORD;
+                    break;
+                case W_16: //2
+                    f->width = WIDTH_WORD;
+                    break;
+                default:
+                    printf("Unsupported instruction width!\n");
+                    break;
+            }
+        }
+        else
+        {
+                printf("Non store or load function op code%x\n", ri->opcode);
+                return;
+        }
     }
-
-    switch (ri->func3) {
-        case LD_ST_B:
-            f->width = WIDTH_BYTE;
-            break;
-        case LD_ST_H:
-            f->width = WIDTH_HALFWORD;
-            break;
-        case LD_ST_W:
-            f->width = WIDTH_WORD;
-            break;
-        case LD_ST_D:
-            f->width = WIDTH_DOUBLEWORD;
-            break;
-        default:
-            printf("unknonwn store width %d\n", ri->func3);
-            break;
+    else
+    {
+        ri->opcode = OPCODE(*i); // decipher our opcode using the value at address i and set our riscv_struct to have this value
+        switch (ri->opcode) { // switch case with our deciphered op code
+            case ST_OP: // if we have a store opcode
+                ri->rs2 = ST_RS2(*i); //set rs2 in struct to our  store rs2 function return value using the value at address i
+                ri->rs1 = ST_RS1(*i);  // set rs1 in struct to our store rs1 function return value using the value at address i
+                ri->func3 = FUNC3(*i); // finally decode our FUNC3 value to use in the next switch
+                ri->inst = *i;
+                break;
+            case LD_OP: // if we have a load opcode
+                ri->rs1 = LD_RS1(*i); // set rs1 to load function RS1 return val
+                ri->rd = LD_RD(*i); // set rd to load function RD return val
+                ri->immi = LD_IMMI(*i); // set our immi to be the load function IMMI return val
+                ri->func3 = FUNC3(*i); // decode our FUNC3 val
+                break;
+            default: // we don't know what to do with our opcode
+                printf("Invalid op %x\n", ri->opcode);
+                break;
+        }
+        switch (ri->func3) { // switch with our deciphered func3 from the prior switch case
+            case LD_ST_B:
+                f->width = WIDTH_BYTE;
+                break;
+            case LD_ST_H:
+                f->width = WIDTH_HALFWORD;
+                break;
+            case LD_ST_W:
+                f->width = WIDTH_WORD;
+                break;
+            case LD_ST_D:
+                f->width = WIDTH_DOUBLEWORD;
+                break;
+            default:
+                printf("unknown store width %d\n", ri->func3);
+                break;
+        }
     }
-    return;
 }
+bool isInstruction16Bit(uint32_t instruction)
+{
+    return ((instruction & INSTRUCTION_SIZE_MASK) < IS_32_BIT);
+}
+
 
 #define SBI_SET_TIMER 0
 #define SBI_CONSOLE_PUTCHAR 1
@@ -2682,7 +2844,7 @@ void decode_inst(fault_t *f)
 static int handle_page_fault(vm_t *vm, fault_t *fault)
 {
     uintptr_t  addr = fault->addr;
-    dump_guest(vm, addr);
+   // dump_guest(vm, addr);
     int err = 0;
     for (int i = 0; i < vm->ndevices; i++) {
         struct device *d = &vm->devices[i];
@@ -2858,13 +3020,15 @@ static int vm_event(vm_t* vm, seL4_MessageInfo_t tag, seL4_Word badge)
                 }
 
                 case SBI_SEND_IPI: {
+                    printf("In the case sbi_send ipi\n");
                     seL4_Word hartid_mask = regs->a0;
                     seL4_Word ip_gpa = gva_to_gpa(fault->vm, regs->a0, vcpu_id);
                     if (ip_gpa == 0) {
                         printf("regs->a0 is %lx on vcpu %d\n", regs->a0, (int)vcpu_id);
                     }
                     assert(ip_gpa != 0);
-                    vm_copyin(fault->vm, &hartid_mask, ip_gpa, sizeof(hartid_mask));
+                    err = vm_copyin(fault->vm, &hartid_mask, ip_gpa, sizeof(hartid_mask));
+                    assert(err > -1);
                     //printf("hartmask %llx %d\n", hartid_mask, (int)vcpu_id);
                     for (int i = 0; i < MAX_NUM_VCPUS; i++) {
                         if (hartid_mask & BIT(i)) {
@@ -2963,7 +3127,7 @@ int main(void)
         seL4_DebugHalt();
         return -1;
     }
-    vm_set_bootargs(&vm, (seL4_Word)entry, 0, DTB_ADDR); 
+    vm_set_bootargs(&vm, (seL4_Word)entry, 0, DTB_ADDR);
     /* Power on */
     printf("Starting VM\n\n");
 
