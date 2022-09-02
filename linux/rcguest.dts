@@ -1,0 +1,68 @@
+/dts-v1/;
+
+/ {
+	#address-cells = <0x2>;
+	#size-cells = <0x2>;
+
+	cpus {
+		#address-cells = <0x1>;
+		#size-cells = <0x0>;
+		timebase-frequency = <1000000>;
+
+		cpu0: cpu@0 {
+			device_type = "cpu";
+			reg = <0x0>;
+			status = "okay";
+			compatible = "riscv";
+			riscv,isa = "rv64imafdcsu";
+			mmu-type = "riscv,sv48";
+
+			cpu0_intc: interrupt-controller {
+				#interrupt-cells = <0x1>;
+				interrupt-controller;
+				compatible = "riscv,cpu-intc";
+			};
+		};
+	};
+
+	memory@80000000 {
+		device_type = "memory";
+		reg = <0x0 0x80000000 0x0 0x20000000>;
+	};
+
+	plic: interrupt-controller@c000000 {
+		riscv,ndev = <60>;
+		reg = <0x0 0xc000000 0x0 0x4000000>;
+		interrupts-extended = <
+			&cpu0_intc 11 &cpu0_intc 9
+		>;
+		interrupt-controller;
+		compatible = "riscv,plic0";
+		#interrupt-cells = <0x1>;
+	};
+
+	uartclk: uartclk {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <100000000>;
+	};
+
+     serial@ff010000 {
+    	compatible = "cdns,uart-r1p12";
+    	status = "okay";
+        interrupts = <0x2>;
+        interrupt-parent = <&plic>;
+    	reg = <0x0 0xff010000 0x0 0x1000>;
+    	clock-names = "uart_clk", "pclk";
+    	clocks = <&uartclk>, <&uartclk>;
+    };
+
+    aliases {
+        serial0 = "/serial@ff010000";
+    };
+
+	chosen {		
+		bootargs = "earlycon console=ttyPS0,115200n8 clk_ignore_unused";
+        stdout-path = "/serial@ff010000";
+	};	
+};
