@@ -23,11 +23,13 @@ file(GLOB static
 
 if(SMP)
     set(LinuxImage linux-smp)
+elseif(${KernelPlatform} STREQUAL "rocketchip")
+    set(LinuxImage rc-linux)
 else()
     set(LinuxImage linux)
 endif()
 
-MakeCPIO(archive.o "${CMAKE_SOURCE_DIR}/projects/sel4_riscv_vmm/linux/${LinuxImage};${CMAKE_SOURCE_DIR}/projects/sel4_riscv_vmm/linux/linux-dtb;${CMAKE_SOURCE_DIR}/projects/sel4_riscv_vmm/linux/linux-smp2.dtb;${CMAKE_SOURCE_DIR}/projects/sel4_riscv_vmm/linux/linux-smp3.dtb;${CMAKE_SOURCE_DIR}/projects/sel4_riscv_vmm/linux/linux-smp4.dtb")
+MakeCPIO(archive.o "${CMAKE_SOURCE_DIR}/projects/sel4_riscv_vmm/linux/${LinuxImage};${CMAKE_SOURCE_DIR}/projects/sel4_riscv_vmm/linux/linux-dtb;${CMAKE_SOURCE_DIR}/projects/sel4_riscv_vmm/linux/rc-dtb;${CMAKE_SOURCE_DIR}/projects/sel4_riscv_vmm/linux/linux-smp2.dtb;${CMAKE_SOURCE_DIR}/projects/sel4_riscv_vmm/linux/linux-smp3.dtb;${CMAKE_SOURCE_DIR}/projects/sel4_riscv_vmm/linux/linux-smp4.dtb")
 
 add_executable(sel4-riscv-vmm EXCLUDE_FROM_ALL ${static} archive.o)
 target_link_libraries(sel4-riscv-vmm muslc sel4 sel4runtime sel4allocman sel4vka sel4utils sel4platsupport sel4muslcsys)

@@ -37,8 +37,6 @@
 
 
 bool isInstruction16Bit(uint32_t instruction);
-
-
 static int vm_copyin_lock = 0;
 static int vm_map_device_lock = 0;
 
@@ -596,6 +594,8 @@ seL4_MessageInfo_t irq_server_wait_for_irq(irq_server_t irq_server, seL4_Word *b
 
 #if CONFIG_MAX_NUM_NODES > 1
 #define VM_LINUX_NAME       "linux-smp"
+#elif  CONFIG_PLAT_ROCKETCHIP
+#define VM_LINUX_NAME       "rc-linux"
 #else
 #define VM_LINUX_NAME       "linux"
 #endif
@@ -606,6 +606,8 @@ seL4_MessageInfo_t irq_server_wait_for_irq(irq_server_t irq_server, seL4_Word *b
 #define VM_LINUX_DTB_NAME    "linux-smp3.dtb"
 #elif CONFIG_MAX_NUM_NODES == 4
 #define VM_LINUX_DTB_NAME    "linux-smp4.dtb"
+#elif  CONFIG_PLAT_ROCKETCHIP
+#define VM_LINUX_DTB_NAME   "rc-dtb"
 #else
 #define VM_LINUX_DTB_NAME   "linux-dtb"
 #endif
@@ -659,7 +661,6 @@ struct fault {
 };
 
 typedef struct fault fault_t;
-
 
 static void advance_pc(fault_t *fault, seL4_UserContext *regs);
 void decode_inst(fault_t *f);
@@ -801,7 +802,6 @@ static fault_t *fault_init(vm_t *vm, vcpu_info_t *vcpu)
 }
 
 
-// #define DEBUG_FAULTS
 #ifdef DEBUG_FAULTS
 #define DFAULT(...) printf(__VA_ARGS__)
 #else
@@ -857,18 +857,18 @@ static seL4_UserContext* fault_get_ctx(fault_t *f)
 {
     if ((f->content & CONTENT_REGS) == 0) {
         int err;
-        vcpu_info_t *vcpu = f->vcpu; // grab the fault vcpu
+        vcpu_info_t *vcpu = f->vcpu;
 
         err = seL4_TCB_ReadRegisters(vcpu->tcb.cptr, false, 0,
                                      sizeof(f->regs) / sizeof(f->regs.pc),
-                                     &f->regs); //read the vcpu's thread control buffer register's and put it into the fault's regs var
-        assert(!err); // assert our read worked
-        f->content |= CONTENT_REGS; // set the content = equal to CONTENT_REGS
+                                     &f->regs);
+        assert(!err);
+        f->content |= CONTENT_REGS;
     }
-    return &f->regs; // return the address of our fault's reg variable
+    return &f->regs;
 }
 
-static seL4_Word gva_to_gpa(vm_t *vm, seL4_Word va, int vcpu_id); // the vm, the virtual address, and the vcpu_id
+static seL4_Word gva_to_gpa(vm_t *vm, seL4_Word va, int vcpu_id);
 static void dump_guest(vm_t *vm, seL4_Word addr);
 
 static int new_user_fault(fault_t *fault)
@@ -1048,7 +1048,11 @@ static int vmm_get_guest_vspace(vspace_t *loader, vspace_t *new_vspace, vka_t *v
 }
 
 
-#define IRQ_UART    2
+#ifdef CONFIG_PLAT_ROCKETCHIP
+    #define IRQ_UART    2
+#else
+    #define IRQ_UART    10
+#endif
 
 #if CONFIG_MAX_NUM_NODES > 1
 #define IRQ_VCPU0_VTIMER    132
@@ -1719,7 +1723,6 @@ static void *map_emulated_device_pages(vm_t *vm, struct device *d)
     DMAP("Mapping emulated device ipa0x%p size 0x%lx\n", vm_addr, size);
     for (; remain_size > 0; remain_size -= 0x1000) {
         /* Create a frame (and a copy for the VMM) */
-       // DMAP("vm_addr is %p\n", vm_addr);
         err = vka_alloc_frame(vka, 12, &frame);
         assert(!err);
         if (err) {
@@ -1825,8 +1828,6 @@ struct device ram_dev = {
 
 #define IRQS_PER_WORD           32
 
-void dump_regs(seL4_UserContext * regs);
-char * get_reg_name(int index);
 static inline seL4_Word get_reg(seL4_UserContext *regs, int index)
 {
 
@@ -2191,8 +2192,6 @@ static inline vcpu_info_t *get_vcpu_by_irq(vm_t *vm, int irq)
     }
 }
 
-
-
 void do_irq_server_ack(void *token)
 {
     assert(token != NULL);
@@ -2349,8 +2348,6 @@ static int install_linux_devices(vm_t *vm)
 
 
 
-// #define DEBUG_COPYOUT 1
-// #define DEBUG_COPYIN  1
 
 #ifdef DEBUG_COPYOUT
 #define DCOPYOUT(...) printf("copyout: " __VA_ARGS__)
@@ -2620,7 +2617,6 @@ static void dump_guest(vm_t *vm, seL4_Word addr)
 #define SV39_MODE       0x8
 
 
-// #define DEBUG_PW
 #ifdef DEBUG_PW
 #define DPW(...)  printf(__VA_ARGS__)
 #else
@@ -2648,7 +2644,6 @@ static seL4_Word gva_to_gpa(vm_t *vm, seL4_Word va, int vcpu_id)
     uint64_t pte = 0;
     int err;
 
-    //read in the page table
     while (level > 0) {
         DPW("copy in %lx level %d\n", gpa, level);
         if (gpa == 0) {
@@ -2656,8 +2651,7 @@ static seL4_Word gva_to_gpa(vm_t *vm, seL4_Word va, int vcpu_id)
         }
         err = vm_copyin(vm, ppt, gpa, sizeof(uint64_t) * 512);
         assert(err > -1);
-        int i = 0;
-        for (i = 0; i < 512; i++) {
+        for (int i = 0; i < 512; i++) {
             if (ppt[i] != 0) {
                 DPW("pte %d %lx\n", i, ppt[i]);
             }
@@ -2686,7 +2680,6 @@ static seL4_Word gva_to_gpa(vm_t *vm, seL4_Word va, int vcpu_id)
             }
 
         }
-
         gpa = (pte >> 10) << 12;
         level--;
     }
@@ -2695,7 +2688,7 @@ static seL4_Word gva_to_gpa(vm_t *vm, seL4_Word va, int vcpu_id)
     return 0;
 }
 
-void decode_inst(fault_t *f) // function used to decode a riscv instruction that comes with a fault
+void decode_inst(fault_t *f)
 {
     int err;
     uint32_t *i = &(f->decoded_inst.inst);
@@ -2838,9 +2831,6 @@ static int handle_invalid_inst(vm_t *vm, fault_t *fault)
 {
     seL4_UserContext *regs = fault_get_ctx(fault);
     seL4_CPtr tcb = fault->vcpu->tcb.cptr;
-    if( (fault -> riscv_inst & 0x03 ) < 3)
-        printf("16 bit instruction in handle invalid inst\n");
-    printf("The instruction is %x\n", fault->riscv_inst);
     if (fault->riscv_inst == WFI_INST) {
         // block the thread by not replying to it, but advance the PC by 4 first
         fault->vcpu->suspended = 1;
@@ -2849,9 +2839,8 @@ static int handle_invalid_inst(vm_t *vm, fault_t *fault)
                 sizeof(*regs) / sizeof(regs->pc), regs);
         return 0;
     }
-    printf("Ra regs is %x\n", regs->ra);
     // ignore other invalid instructions at the moment
-    printf("Unhanlded instruction %x pc %lx\n", fault->riscv_inst,  gva_to_gpa(vm, regs->pc, fault->vcpu_id));
+    printf("Unhandled instruction %x pc %lx\n", fault->riscv_inst,  gva_to_gpa(vm, regs->pc, fault->vcpu_id));
 
     advance_pc(fault, regs);
     seL4_TCB_WriteRegisters(tcb, false, 0,
@@ -2883,7 +2872,6 @@ static int vm_event(vm_t* vm, seL4_MessageInfo_t tag, seL4_Word badge)
     seL4_CPtr tcb = fault->vcpu->tcb.cptr;
     seL4_CPtr vcpu = fault->vcpu->vcpu.cptr;
 
-
 #if CONFIG_MAX_NUM_NODES > 1
 #ifndef CONFIG_PER_VCPU_VMM
     seL4_TCB_SetAffinity(seL4_CapInitThreadTCB, fault->vcpu->affinity);
@@ -2909,7 +2897,6 @@ static int vm_event(vm_t* vm, seL4_MessageInfo_t tag, seL4_Word badge)
         new_user_fault(fault);
         seL4_Word cause = seL4_GetMR(seL4_UserException_Number);
         regs = fault_get_ctx(fault);
-        printf("We hit a User Exception Fault\n");
 
         switch (cause) {
             /* invalid instruction */
@@ -2941,7 +2928,6 @@ static int vm_event(vm_t* vm, seL4_MessageInfo_t tag, seL4_Word badge)
         cause = seL4_GetMR(seL4_VCPUFault_Cause);
         /* check if the exception class (bits 26-31) of the HSR indicate WFI/WFE */
         if (cause == CAUSE_VIRTUAL_INSTRUCTION) {
-            printf("Caused by a virtual instruction\n");
             uint32_t data = seL4_GetMR(seL4_VCPUFault_Data);
             if (data == WFI_INST) {
                 new_fault(fault);
@@ -2993,7 +2979,6 @@ static int vm_event(vm_t* vm, seL4_MessageInfo_t tag, seL4_Word badge)
                 }
 
                 case SBI_SEND_IPI: {
-                    printf("In the case sbi_send ipi\n");
                     seL4_Word hartid_mask = regs->a0;
                     seL4_Word ip_gpa = gva_to_gpa(fault->vm, regs->a0, vcpu_id);
                     if (ip_gpa == 0) {
@@ -3047,12 +3032,6 @@ static int vm_event(vm_t* vm, seL4_MessageInfo_t tag, seL4_Word badge)
                     break;
                 }
 
-
-                case SBI_REMOTE_FENCE_I: {
-                    __asm__ __volatile__ ("fence.i");
-                    break;
-                }
-
                 default:
                     printf("unhandled hypcall %d\n", regs->a7);
                     break;
@@ -3075,7 +3054,6 @@ static int vm_event(vm_t* vm, seL4_MessageInfo_t tag, seL4_Word badge)
     }
     return 0;
 }
-
 static void advance_pc(fault_t *fault, seL4_UserContext *regs)
 {
     uint32_t i = 0;
@@ -3125,7 +3103,6 @@ int main(void)
     printf("Starting VM\n\n");
 
     err = vm_start(&vm);
-
 #if CONFIG_MAX_NUM_NODES > 1
 #if CONFIG_MAX_NUM_NODES >= 2
     vm_add_vcpu(&vm, (seL4_Word)entry, 1, DTB_ADDR);
@@ -3144,7 +3121,7 @@ int main(void)
         return -1;
     }
 
-       /* Loop forever, handling events */
+    /* Loop forever, handling events */
     while (1) {
         seL4_MessageInfo_t tag;
         seL4_Word sender_badge;
