@@ -103,9 +103,6 @@ static inline void unlock(int *lock)
 
 
 /* 16 bit opcodes and fxns */
-#define BASE_OP_16   0x0
-
-
 #define ST_OR_LD_MASK_16    0x4
 #define INST_WDTH_MASK_16   0x3
 
@@ -142,6 +139,13 @@ static inline void unlock(int *lock)
 #define LD_ST_W        2
 #define LD_ST_D        3
 
+
+enum instruction_type{
+    STORE,
+    LOAD,
+    OTHER
+};
+
 typedef struct riscv_inst {
     int opcode;
     int rd;
@@ -152,6 +156,7 @@ typedef struct riscv_inst {
     int func5;
     uint32_t inst;
     bool is16Bit;
+    enum instruction_type operation;
 } riscv_inst_t;
 
 /* interrupt server stuff */
@@ -595,7 +600,7 @@ seL4_MessageInfo_t irq_server_wait_for_irq(irq_server_t irq_server, seL4_Word *b
 #if CONFIG_MAX_NUM_NODES > 1
 #define VM_LINUX_NAME       "linux-smp"
 #elif  CONFIG_PLAT_ROCKETCHIP
-#define VM_LINUX_NAME       "rc-linux"
+#define VM_LINUX_NAME       "rclinux"
 #else
 #define VM_LINUX_NAME       "linux"
 #endif
@@ -607,9 +612,9 @@ seL4_MessageInfo_t irq_server_wait_for_irq(irq_server_t irq_server, seL4_Word *b
 #elif CONFIG_MAX_NUM_NODES == 4
 #define VM_LINUX_DTB_NAME    "linux-smp4.dtb"
 #elif  CONFIG_PLAT_ROCKETCHIP
-#define VM_LINUX_DTB_NAME   "rc-dtb"
+#define VM_LINUX_DTB_NAME   "rclinux.dtb"
 #else
-#define VM_LINUX_DTB_NAME   "linux-dtb"
+#define VM_LINUX_DTB_NAME   "linux.dtb"
 #endif
 
 #define VM_NAME                 "Linux"
@@ -638,6 +643,8 @@ enum fault_width {
     WIDTH_HALFWORD,
     WIDTH_BYTE
 };
+
+
 
 struct fault {
     vm_t *vm;
@@ -2025,43 +2032,7 @@ static int handle_plic_fault(struct device *d, vm_t *vm, fault_t *fault)
     decode_inst(fault);
     seL4_UserContext *regs = fault_get_ctx(fault);
     riscv_inst_t *ri = &fault->decoded_inst;
-    uint8_t store = 0;
-   if(ri->is16Bit)
-    {
-        switch(ri->func3 & ST_OR_LD_MASK_16)
-        {
-            case ST_OP_16:{
-                store = 1;
-                break;
-            }
-            case LD_OP_16: {
-                store = 0;
-                break;
-            }
-            default:
-                printf("Can't handle op code %d", ri->func3 & 0x04);
-                return -1;
-        }
-    }
-    else
-    {
-        switch (ri->opcode)
-        {
-            case ST_OP: {
-                store = 1;
-                break;
-            }
-            case LD_OP: {
-               store = 0;
-               break;
-            }
-            default:
-                printf("Can't handle op code %d\n", ri->opcode);
-                return -1;
-        }
-    }
-
-    if(store)
+    if(ri->operation == STORE)
     {
         // 32bit!!!
         assert(fault->width == WIDTH_WORD);
@@ -2077,7 +2048,7 @@ static int handle_plic_fault(struct device *d, vm_t *vm, fault_t *fault)
         ignore_fault(fault);
         return 0;
     }
-    else
+    else if(ri->operation == LOAD)
     {
         assert(fault->width == WIDTH_WORD);
         uint32_t data = 0;
@@ -2104,6 +2075,11 @@ static int handle_plic_fault(struct device *d, vm_t *vm, fault_t *fault)
         set_reg(regs, ri->rd, reg);
         ignore_fault(fault);
         return 0;
+    }
+    else{
+        printf("Unsupported non store or load operation!\n");
+        printf("Full instruction is %lx\n", ri->inst);
+        return -1;
     }
 }
 
@@ -2313,8 +2289,10 @@ static int install_linux_devices(vm_t *vm)
     assert(!err);
     err = vm_install_plic(vm);
     assert(!err);
-    err = vm_install_uart(vm);
-    assert(!err);
+    #ifdef CONFIG_PLAT_ROCKETCHIP
+        err = vm_install_uart(vm);
+        assert(!err);
+    #endif
 
 
     for (int i = 0; i < ARRAY_SIZE(linux_irq); i++) {
@@ -2708,57 +2686,51 @@ void decode_inst(fault_t *f)
     if(ri->is16Bit) // if we have 16 bit instruction (func3 determines the operation)
     {
         ri->opcode = OPCODE_16(*i);
-        if(ri->opcode == BASE_OP_16)
+        ri->func3 = FUNC3_16(*i);
+        int storeOrLoad = ri->func3 & ST_OR_LD_MASK_16;
+        int getInstWidth = ri-> func3 & INST_WDTH_MASK_16;
+        switch(storeOrLoad)
         {
-            ri->func3 = FUNC3_16(*i);
-            int storeOrLoad = ri->func3 & ST_OR_LD_MASK_16;
-            int getInstWidth = ri-> func3 & INST_WDTH_MASK_16;
-            switch(storeOrLoad)
-            {
-                    case ST_OP_16:
-                        ri->rs1 = ST_RS1_16(*i);
-                        ri->rs2 = ST_RS2_16(*i);
-                        ri->inst = *i;
-                        break;
-                    case LD_OP_16:
-                        ri->rd = LD_RD_16(*i);
-                        ri->rs1 = LD_RS1_16(*i);
-                        ri->inst = *i;
-                        break;
-                    default:
-                        printf("How did we even get here....\n");
-                        break;
-            }
-            switch(getInstWidth)
-            {
-                case DW_16:
-                    f->width = WIDTH_DOUBLEWORD;
+                case ST_OP_16:
+                    ri->rs1 = ST_RS1_16(*i);
+                    ri->rs2 = ST_RS2_16(*i);
+                    ri->inst = *i;
+                    ri->operation = STORE;
                     break;
-                case W_16:
-                    f->width = WIDTH_WORD;
+                case LD_OP_16:
+                    ri->rd = LD_RD_16(*i);
+                    ri->rs1 = LD_RS1_16(*i);
+                    ri->inst = *i;
+                    ri->operation = LOAD;
                     break;
                 default:
-                    printf("Unsupported instruction width!\n");
+                    printf("Non store or load function op code%x\n", ri->opcode);
+                    ri->operation = OTHER;
                     break;
-            }
         }
-        else
+        switch(getInstWidth)
         {
-                printf("Non store or load function op code%x\n", ri->opcode);
-                printf("Ip is %lx\n", f->ip);
-                printf("Fault addr is %lx\n", f->addr);
-                printf("Instruction is %lx at address %lx\n", *i, gva_to_gpa(f->vm, f->ip, f->vcpu_id));
-                return;
+            case DW_16:
+                f->width = WIDTH_DOUBLEWORD;
+                break;
+            case W_16:
+                f->width = WIDTH_WORD;
+                break;
+            default:
+                printf("Unsupported instruction width %d!\n", getInstWidth);
+                break;
         }
     }
     else
     {
         ri->opcode = OPCODE(*i);
-        switch (ri->opcode) {
+        switch (ri->opcode)
+        {
             case ST_OP:
                 ri->rs2 = ST_RS2(*i);
                 ri->rs1 = ST_RS1(*i);
                 ri->func3 = FUNC3(*i);
+                ri->operation = STORE;
                 ri->inst = *i;
                 break;
             case LD_OP:
@@ -2766,12 +2738,16 @@ void decode_inst(fault_t *f)
                 ri->rd = LD_RD(*i);
                 ri->immi = LD_IMMI(*i);
                 ri->func3 = FUNC3(*i);
+                ri->operation = LOAD;
+                ri->inst = *i;
                 break;
             default:
-                printf("Invalid op %x\n", ri->opcode);
+                printf("Non store or load function op code%x\n", ri->opcode);
+                ri->operation = OTHER;
                 break;
         }
-        switch (ri->func3) {
+        switch (ri->func3)
+        {
             case LD_ST_B:
                 f->width = WIDTH_BYTE;
                 break;
